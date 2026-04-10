@@ -1,0 +1,32 @@
+gradsapprox:
+  lr_head: 1e-4
+  gradapprox_warmup: 0
+  grads_approx: "none"
+
+grads:
+  lowpass_adam: false
+  normalize: false
+  val_smooth: "val"
+  grad_layer: [23]
+  dimred: false
+
+subsel:
+  val_anchors: false
+  anchorbs: 16
+  domainwise: false
+  apdg_iters: 10
+  minority_full: false
+  minority_classes: []
+  eval_source: train
+  dev_source: eval
+
+domain_weights:
+  enabled: false
+  weights_dir: ""
+
+curricullum:
+  enabled: false
+  beta: 0.0
+  lamb: 0.0
+
+evalbs: 8
