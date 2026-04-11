@@ -147,19 +147,62 @@ tunix/
 
 ## 4. LoRA Configuration
 
-The training script supports both LoRA (Low-Rank Adaptation) fine-tuning and full model fine-tuning.
+The training script supports both LoRA (Low-Rank Adaptation) fine-tuning and full model fine-tuning. LoRA is a parameter-efficient fine-tuning method that significantly reduces memory usage and training time.
 
-### Enable LoRA
+### Enable LoRA Fine-tuning
+
+To use LoRA, **uncomment** the following parameters in `tunix/cli/base_config.yaml` under the `model_config` section:
 
 ```yaml
+################################# LoRa #################################
+# Uncomment below for LoRA fine-tuning; comment out for full fine-tuning
 lora_enabled: true
+lora_config:
+  module_path: ".*q_einsum|.*kv_einsum|.*gate_proj|.*down_proj|.*up_proj"
+  rank: 16
+  alpha: 2.0
+  weight_qtype: "nf4"
+  tile_size: 128
 ```
+
+#### LoRA Parameters Explained
+
+| Parameter | Default | Description |
+|---|---|---|
+| `lora_enabled` | `true` | Enable/disable LoRA fine-tuning |
+| `rank` | `16` | Rank of the low-rank matrices (lower = fewer params) |
+| `alpha` | `2.0` | LoRA scaling factor; typically alpha = 2 × rank is recommended |
+| `weight_qtype` | `nf4` | Quantization type for weights (`nf4` = 4-bit NF quantization) |
+| `tile_size` | `128` | Tile size for quantization (affects memory/computation tradeoff) |
+| `module_path` | (regex) | Regex pattern to match target modules (query, key-value projections, feedforward) |
 
 ### Disable LoRA (Full Fine-tuning)
 
+To perform full model fine-tuning, **comment out** the LoRA parameters:
+
 ```yaml
-lora_enabled: false
+################################# LoRa #################################
+# Uncomment below for LoRA fine-tuning; comment out for full fine-tuning
+# lora_enabled: true
+# lora_config:
+#   module_path: ".*q_einsum|.*kv_einsum|.*gate_proj|.*down_proj|.*up_proj"
+#   rank: 16
+#   alpha: 2.0
+#   weight_qtype: "nf4"
+#   tile_size: 128
 ```
+
+When commented out, the training will use full fine-tuning (all model parameters updated).
+
+### Quick Reference: LoRA vs Full Fine-tuning
+
+| Aspect | LoRA | Full Fine-tuning |
+|---|---|---|
+| Trainable Parameters | ~1-5% of model | 100% of model |
+| Memory Usage | Low | High |
+| Training Speed | Fast | Slow |
+| Final Performance | Good (usually 95%+) | Best |
+| Use Case | Limited resources, quick iteration | Maximum performance needed |
 
 ---
 
