@@ -28,6 +28,7 @@ from tunix.sft import utils
 from flax.core import FrozenDict
 from functools import partial
 from tunix.sft import subsel_utils
+import chex
 
 _ModelInputT = Dict[str, ArrayLike]
 P = ParamSpec("P")
@@ -35,6 +36,34 @@ P = ParamSpec("P")
 from flax.nnx import rnglib, variablelib
 import typing as tp
 A = tp.TypeVar('B')
+
+
+def compute_gradient_norm(grads: Any) -> float:
+  """Computes the L2 norm of all gradients.
+  
+  Args:
+    grads: JAX array or pytree of gradients.
+    
+  Returns:
+    The L2 norm of all gradients combined.
+  """
+  # Flatten gradients into a single vector
+  flat_grads = jax.tree_util.tree_leaves(grads)
+  
+  # Compute L2 norm for each gradient array
+  norms_squared = []
+  for grad in flat_grads:
+    if grad is not None and hasattr(grad, 'shape'):
+      norm_sq = jnp.sum(grad ** 2)
+      norms_squared.append(norm_sq)
+  
+  # Compute overall L2 norm
+  if norms_squared:
+    total_norm_sq = sum(norms_squared)
+    grad_norm = jnp.sqrt(total_norm_sq)
+    return float(jax.device_get(grad_norm))
+  return 0.0
+
 
 class SubsetGradParam(variablelib.Param[A]):
   pass
@@ -574,6 +603,7 @@ class PeftTrainer:
       self.optimizer_last = nnx.Optimizer(self.model, optimizer_last, wrt=partial(subsel_utils.grad_filter, [27]))
     else:
       self.optimizer = nnx.Optimizer(self.model, optimizer, wrt=nnx.Param)
+      self.optimizer_last = nnx.Optimizer(self.model, optimizer_last, wrt=nnx.Param)
     self.project = GradApprox(model.config, rngs=nnx.Rngs(params=0))
     self.project2 = GradApprox(model.config, rngs=nnx.Rngs(params=0))
     self.optimizer_head = nnx.Optimizer(self.project, optimizer_head, wrt=nnx.Param)
@@ -730,16 +760,18 @@ class PeftTrainer:
 
   def _train_step(
       self, model: nnx.Module, optimizer: nnx.Optimizer, inputs: Any, step, loss_mask
-  ) -> ArrayLike | Tuple[ArrayLike, Any]:
+  ) -> Tuple[ArrayLike, Any, Any]:
     """Main body for one train step.
 
     Args:
       model: The model to train.
       optimizer: The optimizer to use.
       inputs: The training input.
+      step: The current training step.
+      loss_mask: Mask for loss computation.
 
     Returns:
-      The loss and auxiliary data if has_aux is True, otherwise the loss.
+      Tuple of (loss, auxiliary data, gradients).
     """
     grad_fn = nnx.value_and_grad(
         self.loss_fn,
@@ -751,9 +783,9 @@ class PeftTrainer:
     optimizer.update(grads)
     if self._has_aux:
       loss, aux = out
-      return loss, aux
+      return loss, aux, grads
     else:
-      return out, None
+      return out, None, grads
 
   def _eval_step(
       self, model: nnx.Module, inputs: Any
@@ -969,16 +1001,20 @@ class PeftTrainer:
     self._buffered_train_metrics = None
 
   def _write_metrics(self, metrics_buffer: MetricsBuffer):
+    # Handle additional metrics - some values are lists (to be averaged), 
+    # some are scalars (like grad_norm)
+    processed_metrics = {}
+    for k, v in metrics_buffer.additional_metrics.items():
+      if isinstance(v, list):
+        processed_metrics[k] = np.mean(v)
+      else:
+        processed_metrics[k] = v
+    
     self._log_metrics(
         loss=metrics_buffer.loss,
         step=metrics_buffer.step,
         step_time_delta=metrics_buffer.step_time_delta,
-        additional_metrics={
-            k: np.mean(v)
-            for k, (
-                v,
-            ) in metrics_buffer.additional_metrics.items()
-        },
+        additional_metrics=processed_metrics,
     )
 
   @contextlib.contextmanager
@@ -1071,6 +1107,133 @@ class PeftTrainer:
       self.training_hooks.on_train_start(self)
 
     train_iterator = iter(train_ds)
+
+    # ─── Comprehensive Configuration Printing ─────────────────────────
+    import sys
+
+    sys.stdout.flush()
+    
+    # MODEL CONFIGURATION
+    model_name = self.fullConfig.get("model_config", {}).get("model_name", "unknown")
+    model_id = self.fullConfig.get("model_config", {}).get("model_id", "unknown")
+    lora_enabled = self._lora_enabled
+    lora_config = self.fullConfig.get("model_config", {}).get("lora_config", None)
+    
+    print("\n" + "="*70,                                                                      flush=True)
+    print("                    MODEL CONFIGURATION",                                          flush=True)
+    print("="*70,                                                                             flush=True)
+    print(f"  Model Name              : {model_name}",                                       flush=True)
+    print(f"  Model ID (HuggingFace)  : {model_id}",                                         flush=True)
+    print(f"  LoRA Enabled            : {'Yes' if lora_enabled else 'No'}",                  flush=True)
+    
+    if lora_enabled and lora_config:
+        print("-"*70,                                                                         flush=True)
+        print("  LoRA CONFIGURATION:",                                                        flush=True)
+        print(f"    Rank                : {lora_config.get('rank', 'N/A')}",                  flush=True)
+        print(f"    Alpha               : {lora_config.get('alpha', 'N/A')}",                 flush=True)
+        print(f"    Weight Quantization : {lora_config.get('weight_qtype', 'N/A')}",          flush=True)
+        print(f"    Tile Size           : {lora_config.get('tile_size', 'N/A')}",             flush=True)
+        module_path = lora_config.get('module_path', 'N/A')
+        if len(module_path) > 50:
+            print(f"    Target Modules      : {module_path[:50]}...",                         flush=True)
+        else:
+            print(f"    Target Modules      : {module_path}",                                 flush=True)
+    
+    print("="*70,                                                                             flush=True)
+    sys.stdout.flush()
+    
+    # DATASET CONFIGURATION
+    dataset_name = self.fullConfig.get("dataset_name", "unknown")
+    batch_size = self.fullConfig.get("batch_size", 0)
+    eval_batch_size = self.fullConfig.get("eval_batch_size", 0)
+    max_seq_len = self.fullConfig.get("max_target_length", 0)
+    num_epochs = self.fullConfig.get("num_train_epochs", 1)
+    train_fraction = self.fullConfig.get("train_fraction", 1.0)
+    
+    print("\n" + "="*70,                                                                      flush=True)
+    print("                    DATASET CONFIGURATION",                                       flush=True)
+    print("="*70,                                                                             flush=True)
+    print(f"  Dataset Name            : {dataset_name}",                                     flush=True)
+    print(f"  Batch Size (train)      : {batch_size} examples",                              flush=True)
+    print(f"  Batch Size (eval)       : {eval_batch_size} examples",                         flush=True)
+    print(f"  Max Sequence Length     : {max_seq_len} tokens",                               flush=True)
+    print(f"  Num Train Epochs        : {num_epochs}",                                       flush=True)
+    print(f"  Train Fraction          : {train_fraction:.1%}",                               flush=True)
+    print("="*70,                                                                             flush=True)
+    sys.stdout.flush()
+    
+    # OPTIMIZER CONFIGURATION
+    optimizer_config = self.fullConfig.get("optimizer_config", {})
+    learning_rate = optimizer_config.get("learning_rate", 0)
+    opt_type = optimizer_config.get("opt_type", "unknown")
+    schedule_type = optimizer_config.get("schedule_type", "unknown")
+    max_grad_norm = optimizer_config.get("max_grad_norm", "N/A")
+    b1 = optimizer_config.get("b1", 0.9)
+    b2 = optimizer_config.get("b2", 0.99)
+    weight_decay = optimizer_config.get("weight_decay", 0.0)
+    warmup_steps = optimizer_config.get("warmup_steps", 0)
+    
+    print("\n" + "="*70,                                                                      flush=True)
+    print("                    OPTIMIZER CONFIGURATION",                                     flush=True)
+    print("="*70,                                                                             flush=True)
+    print(f"  Optimizer Type          : {opt_type.upper()}",                                 flush=True)
+    print(f"  Base Learning Rate      : {learning_rate}",                                    flush=True)
+    print(f"  Learning Rate Schedule  : {schedule_type}",                                    flush=True)
+    print(f"  Warmup Steps            : {warmup_steps}",                                     flush=True)
+    print(f"  Beta 1 (momentum)       : {b1}",                                               flush=True)
+    print(f"  Beta 2 (2nd moment)     : {b2}",                                               flush=True)
+    print(f"  Weight Decay            : {weight_decay}",                                     flush=True)
+    print(f"  Max Gradient Norm       : {max_grad_norm}",                                    flush=True)
+    print("="*70,                                                                             flush=True)
+    sys.stdout.flush()
+    
+    # TRAINING CONFIGURATION
+    actual_batch_size       = self.fullConfig["batch_size"]
+    buffer                  = self.fullConfig["subset_select"]["buffer"]
+    max_seq_len             = self.fullConfig["max_target_length"]
+    max_steps               = self.config.max_steps
+    grad_accum              = self.config.get_with_default("gradient_accumulation_steps", 1)
+    eval_every_n_steps      = self.config.eval_every_n_steps
+    checkpoint_dir          = self.config.checkpoint_root_directory
+
+    try:
+        batches_per_epoch = len(train_ds)
+        total_examples    = batches_per_epoch * actual_batch_size
+    except Exception:
+        batches_per_epoch = self.fullConfig["num_batches"]
+        total_examples    = batches_per_epoch * actual_batch_size
+
+    examples_per_iter       = actual_batch_size * buffer
+    steps_per_epoch         = total_examples // examples_per_iter if examples_per_iter > 0 else 0
+    model_updates_per_epoch = batches_per_epoch * batch_to_buffer // grad_accum if grad_accum > 0 else 0
+    tokens_per_batch        = actual_batch_size * max_seq_len
+    tokens_per_epoch        = total_examples * max_seq_len
+
+    print("\n" + "="*70,                                                                      flush=True)
+    print("                  TRAINING CONFIGURATION SUMMARY",                                flush=True)
+    print("="*70,                                                                             flush=True)
+    print(f"  Dataset size            : {total_examples:,} examples",                        flush=True)
+    print(f"  Batch size (micro)      : {actual_batch_size} examples",                       flush=True)
+    print(f"  Buffer size             : {buffer}x  →  {examples_per_iter} examples per dataset step", flush=True)
+    print(f"  Batch-to-buffer         : {batch_to_buffer} model updates per dataset step",   flush=True)
+    print(f"  Max sequence length     : {max_seq_len} tokens",                               flush=True)
+    print(f"  Gradient accum steps    : {grad_accum}",                                       flush=True)
+    print(f"  Subset select mode      : {mode}",                                             flush=True)
+    print("-"*70,                                                                             flush=True)
+    print(f"  Dataset steps/epoch     : {steps_per_epoch:,}",                                flush=True)
+    print(f"  Model updates/epoch     : {model_updates_per_epoch:,} gradient steps",         flush=True)
+    print(f"  Tokens per batch        : {tokens_per_batch:,} tokens",                        flush=True)
+    print(f"  Tokens per epoch        : {tokens_per_epoch/1e6:.1f}M tokens",                 flush=True)
+    print("-"*70,                                                                             flush=True)
+    print(f"  Max steps configured    : {max_steps}",                                        flush=True)
+    print(f"  Eval every N steps      : {eval_every_n_steps}",                               flush=True)
+    if model_updates_per_epoch > 0:
+        print(f"  Epochs in max_steps     : {max_steps / model_updates_per_epoch:.3f}",      flush=True)
+    print(f"  Checkpoint directory    : {checkpoint_dir}",                                   flush=True)
+    print("="*70 + "\n",                                                                      flush=True)
+    sys.stdout.flush()
+    # ──────────────────────────────────────────────────────────────────
+
     # ex = next(train_iterator)
     index = 0
     last_step_completion_time = time.perf_counter()
@@ -1179,19 +1342,27 @@ class PeftTrainer:
             if self.training_hooks:
               self.training_hooks.on_train_step_start(self)
             with utils.time_measure("ModelStep", suppress_logging=True):
-              train_loss, aux = train_step(self.model, self.optimizer, train_example, self._train_steps, loss_mask)
+              train_loss, aux, grads = train_step(self.model, self.optimizer, train_example, self._train_steps, loss_mask)
+
+            # Compute gradient norm
+            grad_norm = compute_gradient_norm(grads)
 
             current_time = time.perf_counter()
             step_time_delta = current_time - last_step_completion_time
             last_step_completion_time = current_time
 
             self._throttler.add_computation(train_loss)
+            
+            # Prepare additional metrics, converting to lists for consistent unpacking
+            additional_metrics = {**aux, **subsel_aux} if i == 0 else aux
+            additional_metrics["grad_norm"] = [grad_norm]  # Store as list like other metrics
+            
             self._buffered_train_metrics = self._buffer_metrics(
                 self._buffered_train_metrics,
                 loss=train_loss,
                 step=self._train_steps,
                 step_time_delta=step_time_delta,
-                additional_metrics={**aux, **subsel_aux} if i == 0 else aux
+                additional_metrics=additional_metrics
             )
             # NB: put this after self._buffer_metrics is important
             self._post_process_train_step(aux)

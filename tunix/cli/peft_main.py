@@ -211,10 +211,14 @@ class PeftPipeline(config.HyperParameters):
     from omegaconf import OmegaConf
     self.config["task_config"]["config"] = OmegaConf.load(self.config["task_config"]["config"])
     print("Loaded task config", self.config["task_config"]["config"])
-    print("###########")
-    print("###########")
-    print("###########")
-    print("###########")
+    print("##################################################################")
+    print("##################################################################")
+    # print("###########")
+    # print("###########")
+    
+    print("----------------------------------------------------------")
+    print(f"Subset Select Mode : {self.config['subset_select']['mode']}")
+    print("----------------------------------------------------------")
     
     model, tokenizer_path = model_lib.create_model(
         self.config['model_config'], self.config['tokenizer_config'], mesh
@@ -328,10 +332,11 @@ class PeftPipeline(config.HyperParameters):
     print("Num Batches:", get_len(ds)//self.config['batch_size'])
     print("Len Eval Dataset:", get_len(eval_ds))
     print("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
-    tx = optax.MultiSteps(
-          optimizer, 1
-      )
-    tx  = nnx.Optimizer(model, tx, wrt=nnx.LoRAParam)
+    # Optimizer is now created inside PeftTrainer based on _lora_enabled flag
+    # if utils.is_lora_enabled(model):
+    #     tx = optax.MultiSteps(optimizer, 1)
+    #     tx = nnx.Optimizer(model, tx, wrt=nnx.LoRAParam)
+    # else: skip — full FT optimizer is created inside PeftTrainer
     # jax.debug.print("opt {}", tx.opt_state.inner_opt_state[1].hyperparams)
 
     

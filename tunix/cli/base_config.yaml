@@ -42,6 +42,7 @@ model_config: &base_model_config
   # Directory used for NNX conversion if downloaded Gemma/Gemma2 from Kaggle source. 
   intermediate_ckpt_dir: "/tmp/intermediate_ckpt/"
   ################################# LoRa #################################
+  # Uncomment below for LoRA fine-tuning; comment out for full fine-tuning
   lora_enabled: true
   lora_config:
     module_path: ".*q_einsum|.*kv_einsum|.*gate_proj|.*down_proj|.*up_proj"
