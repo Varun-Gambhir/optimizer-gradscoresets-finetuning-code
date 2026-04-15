@@ -3,7 +3,7 @@ import torch
 from omegaconf import OmegaConf
 import logging
 
-from tunix_pt.cli.utils import model
+from tunix_pt.cli.utils import model as model_utils
 from tunix_pt.cli import optax_ext
 from tunix_pt.sft import subset_trainer
 
@@ -77,8 +77,8 @@ def main():
     model_config = config.get("model_config", {})
     tokenizer_config = config.get("tokenizer_config", {})
     
-    model, tokenizer_path = model.create_model(model_config, tokenizer_config)
-    tokenizer = model.create_tokenizer(tokenizer_config, tokenizer_path=tokenizer_path)
+    model, tokenizer_path = model_utils.create_model(model_config, tokenizer_config)
+    tokenizer = model_utils.create_tokenizer(tokenizer_config, tokenizer_path=tokenizer_path)
 
     # 2. Datasets
     # As the original dataset scripts heavily rely on JAX data loaders, we use a basic PyTorch DataLoader 
