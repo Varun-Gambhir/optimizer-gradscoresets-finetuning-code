@@ -53,13 +53,25 @@ def build_optimizer_pt(model, optimizer_config):
         
     return optim
 
-def default_loss_fn(model, batch):
-    outputs = model(
-        input_ids=batch["input_ids"],
-        attention_mask=batch["attention_mask"],
-        labels=batch["labels"]
-    )
-    return outputs.loss
+def get_default_loss_fn(pad_id):
+    def loss_fn(model, batch):
+        input_ids = batch["input_tokens"]
+        
+        # JAX jax_collate sets input_mask=1 where we compute loss (e.g. response tokens), else 0.
+        # HF AutoModelForCausalLM expects labels to be -100 for ignored tokens.
+        labels = input_ids.clone()
+        labels[batch["input_mask"] == 0] = -100
+        
+        # HF attention mask is 1 for real tokens and 0 for pad tokens
+        attention_mask = (input_ids != pad_id).long()
+
+        outputs = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=labels
+        )
+        return outputs.loss
+    return loss_fn
 
 def main():
     logging.basicConfig(level=logging.INFO)
@@ -148,12 +160,14 @@ def main():
         gradient_accumulation_steps=training_config_dict.get("gradient_accumulation_steps", 1)
     )
 
+    loss_fn = get_default_loss_fn(tokenizer.pad_token_id)
+    
     trainer = subset_trainer.PeftTrainerPT(
         model=model,
         optimizer=optimizer,
         training_config=training_config,
-        train_loss_fn=default_loss_fn,
-        eval_loss_fn=default_loss_fn,
+        train_loss_fn=loss_fn,
+        eval_loss_fn=loss_fn,
         full_config=OmegaConf.to_container(config, resolve=True)
     )
 
