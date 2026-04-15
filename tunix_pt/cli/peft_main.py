@@ -94,8 +94,12 @@ def main():
     # We follow the same extraction as the JAX pipeline.
     task_config = config.get("task_config", {}).get("config", {})
     if isinstance(task_config, str):
-        try: task_config = OmegaConf.load(task_config)
-        except: task_config = {}
+        try: 
+            task_config = OmegaConf.load(task_config)
+            config["task_config"]["config"] = task_config
+        except Exception: 
+            task_config = {}
+            config["task_config"]["config"] = task_config
     
     dataset_name = config.get("dataset_name", "TIGER-Lab/MathInstruct")
     eval_split = config.get("eval_split", 0.005)
