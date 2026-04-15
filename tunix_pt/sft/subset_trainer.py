@@ -5,6 +5,7 @@ from typing import Any, Callable, Dict, List, Optional
 import time
 import logging
 
+import numpy as np
 from tunix_pt.sft import subsel_utils
 
 class TrainingConfigPT:
@@ -61,8 +62,18 @@ class PeftTrainerPT:
                     logging.info("Max steps reached. Finishing training.")
                     return
                 
-                # Move to device
-                batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+                # Convert JAX / Numpy arrays to PT Tensors
+                pt_batch = {}
+                for k, v in batch.items():
+                    if isinstance(v, torch.Tensor):
+                        pt_batch[k] = v.to(self.device)
+                    elif hasattr(v, "device") or isinstance(v, (np.ndarray, list)): # Supports JAX Arrays
+                        pt_batch[k] = torch.as_tensor(np.array(v)).to(self.device).long() if "int" in str(getattr(v, "dtype", "int")).lower() else torch.as_tensor(np.array(v)).to(self.device)
+                    elif isinstance(v, dict):
+                        pt_batch[k] = {kk: torch.as_tensor(np.array(vv)).to(self.device).long() if "int" in str(getattr(vv, "dtype", "int")).lower() else torch.as_tensor(np.array(vv)).to(self.device) for kk, vv in v.items()}
+                    else:
+                        pt_batch[k] = v
+                batch = pt_batch
                 
                 # Subset Selection
                 if subsel_enabled and subsel_mode != "full":
@@ -116,7 +127,17 @@ class PeftTrainerPT:
         count = 0
         
         for batch in eval_dl:
-            batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+            pt_batch = {}
+            for k, v in batch.items():
+                if isinstance(v, torch.Tensor):
+                    pt_batch[k] = v.to(self.device)
+                elif hasattr(v, "device") or isinstance(v, (np.ndarray, list)):
+                    pt_batch[k] = torch.as_tensor(np.array(v)).to(self.device).long() if "int" in str(getattr(v, "dtype", "int")).lower() else torch.as_tensor(np.array(v)).to(self.device)
+                elif isinstance(v, dict):
+                    pt_batch[k] = {kk: torch.as_tensor(np.array(vv)).to(self.device).long() if "int" in str(getattr(vv, "dtype", "int")).lower() else torch.as_tensor(np.array(vv)).to(self.device) for kk, vv in v.items()}
+                else:
+                    pt_batch[k] = v
+            batch = pt_batch
             loss = self.eval_loss_fn(self.model, batch)
             total_loss += loss.item()
             count += 1

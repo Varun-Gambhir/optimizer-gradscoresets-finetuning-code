@@ -26,6 +26,14 @@ class DummyDictDataset(Dataset):
             "labels": torch.randint(0, self.vocab, (self.seq_len,))
         }
 
+class TokenizerWrapper:
+    def __init__(self, tok):
+        self._tokenizer = tok
+    def pad_id(self):
+        return self._tokenizer.pad_token_id
+    def eos_id(self):
+        return self._tokenizer.eos_token_id
+
 def build_optimizer_pt(model, optimizer_config):
     opt_type = optimizer_config.get("opt_type", "adamw").lower()
     lr = optimizer_config.get("learning_rate", 2e-5)
@@ -81,17 +89,49 @@ def main():
     tokenizer = model_utils.create_tokenizer(tokenizer_config, tokenizer_path=tokenizer_path)
 
     # 2. Datasets
-    # As the original dataset scripts heavily rely on JAX data loaders, we use a basic PyTorch DataLoader 
-    # to demonstrate the pipeline functions.
-    batch_size = config.get("batch_size", 4)
-    eval_batch_size = config.get("eval_batch_size", 4)
+    from tunix.examples.data import ift_dataset as data_lib_ift
     
-    train_dataset = DummyDictDataset(size=1000)
-    eval_dataset = DummyDictDataset(size=100)
+    # We follow the same extraction as the JAX pipeline.
+    task_config = config.get("task_config", {}).get("config", {})
+    if isinstance(task_config, str):
+        try: task_config = OmegaConf.load(task_config)
+        except: task_config = {}
     
-    train_dl = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    eval_dl = DataLoader(eval_dataset, batch_size=eval_batch_size, shuffle=False)
-
+    dataset_name = config.get("dataset_name", "TIGER-Lab/MathInstruct")
+    eval_split = config.get("eval_split", 0.005)
+    cache_dir = config.get("cache_dir", None)
+    max_target_length = config.get("max_target_length", 256)
+    
+    # The pipeline extracts specific configuration for subsets
+    # We parse the subsel configuration manually if task_config exists
+    if hasattr(task_config, "subsel") and hasattr(task_config.subsel, "enabled"):
+        subsel = task_config.subsel.enabled
+    else:
+        subsel = config.get("subset_select", {}).get("enabled", False)
+        
+    buffer = config.get("subset_select", {}).get("buffer", 1) if subsel else 1
+    
+    _ratio = config.get("subset_select", {}).get("ratio", 1.0)
+    subsel_bs = int(config.get("batch_size", 4) * buffer * _ratio)
+    
+    tokenizer_wrapped = TokenizerWrapper(tokenizer)
+    
+    train_ds, eval_ds, dev_ds, data_meta = data_lib_ift.create_datasets(
+        dataset_name=dataset_name,
+        cache_dir=cache_dir,
+        global_batch_size=config.get("batch_size", 4) * buffer,
+        eval_global_batch_size=config.get("eval_batch_size", 4),
+        max_target_length=max_target_length,
+        num_train_epochs=100,
+        tokenizer=tokenizer_wrapped,
+        split_ratio=eval_split,
+        config=config,
+        subsel_bs=subsel_bs
+    )
+    
+    train_dl = train_ds
+    eval_dl = eval_ds
+    
     # 3. Optimizer
     optimizer_config = config.get("optimizer_config", {})
     optimizer = build_optimizer_pt(model, optimizer_config)
