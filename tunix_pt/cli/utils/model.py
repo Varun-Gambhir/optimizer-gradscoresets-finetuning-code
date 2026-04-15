@@ -92,8 +92,10 @@ def create_model(
     
     if model_config.get('lora_enabled', False) and model_config.get('lora_config'):
         base_model = apply_lora_to_model(base_model, model_config['lora_config'])
+        base_model.gradient_checkpointing_enable()
     else:
         logging.info('Training with Full Weight')
+        base_model.gradient_checkpointing_enable()
         
     if model_config.get('model_display', False):
         print(base_model)

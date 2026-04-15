@@ -130,12 +130,18 @@ def main():
     _ratio = config.get("subset_select", {}).get("ratio", 1.0)
     subsel_bs = int(config.get("batch_size", 4) * buffer * _ratio)
     
+    training_config_dict = config.get("training_config", {})
+    grad_accum_steps = training_config_dict.get("gradient_accumulation_steps", 1)
+    
+    # To mimic JAX's implicit step chunking, we divide global batch sizes by grad_accum_steps to yield PyTorch micro-batches natively protecting GPU VRAM
+    train_micro_bs = max(1, (config.get("batch_size", 4) * buffer) // grad_accum_steps)
+    
     tokenizer_wrapped = TokenizerWrapper(tokenizer)
     
     train_ds, eval_ds, dev_ds, data_meta = data_lib_ift.create_datasets(
         dataset_name=dataset_name,
         cache_dir=cache_dir,
-        global_batch_size=config.get("batch_size", 4) * buffer,
+        global_batch_size=train_micro_bs,
         eval_global_batch_size=config.get("eval_batch_size", 4),
         max_target_length=max_target_length,
         num_train_epochs=100,
