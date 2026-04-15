@@ -46,6 +46,7 @@ class PeftTrainerPT:
         self.device = self.config.device
 
     def train(self, train_dl: DataLoader, num_train_sources: int, eval_dl: DataLoader, dev_ds=None):
+        from tqdm import tqdm
         logging.info("Starting PyTorch Training Loop")
         
         self.model.train()
@@ -56,9 +57,12 @@ class PeftTrainerPT:
         subsel_mode = subset_cfg.get("mode", "full")
         ratio_pct = subset_cfg.get("ratio", 1.0)
         
+        pbar = tqdm(total=self.config.max_steps, desc="Training", dynamic_ncols=True)
+        
         for epoch in range(100): # Safe arbitrarily large number, controlled by max_steps
             for batch in train_dl:
-                if self.config.max_steps and step >= self.config.max_steps:
+                if self.config.max_steps and self._train_steps >= self.config.max_steps:
+                    pbar.close()
                     logging.info("Max steps reached. Finishing training.")
                     return
                 
@@ -114,6 +118,9 @@ class PeftTrainerPT:
                     self.optimizer.step()
                     self.optimizer.zero_grad()
                     self._train_steps += 1
+                    
+                    pbar.update(1)
+                    pbar.set_postfix({"Loss": f"{loss.item() * self.config.gradient_accumulation_steps:.4f}"})
                     
                     if self._train_steps % self.config.eval_every_n_steps == 0:
                         self.evaluate(eval_dl)
