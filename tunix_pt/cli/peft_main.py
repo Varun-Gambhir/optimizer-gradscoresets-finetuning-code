@@ -128,13 +128,15 @@ def main():
     buffer = config.get("subset_select", {}).get("buffer", 1) if subsel else 1
     
     _ratio = config.get("subset_select", {}).get("ratio", 1.0)
-    subsel_bs = int(config.get("batch_size", 4) * buffer * _ratio)
     
     training_config_dict = config.get("training_config", {})
     grad_accum_steps = training_config_dict.get("gradient_accumulation_steps", 1)
     
     # To mimic JAX's implicit step chunking, we divide global batch sizes by grad_accum_steps to yield PyTorch micro-batches natively protecting GPU VRAM
     train_micro_bs = max(1, (config.get("batch_size", 4) * buffer) // grad_accum_steps)
+    
+    # subsel_bs must ALSO be scaled precisely to the micro-batch because jax_collate iterates subset masks dynamically on N sequences
+    subsel_bs = max(1, int(train_micro_bs * _ratio))
     
     tokenizer_wrapped = TokenizerWrapper(tokenizer)
     
